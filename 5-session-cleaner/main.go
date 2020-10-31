@@ -15,22 +15,28 @@
 // very careful in order to prevent race conditions.
 //
 
-package main
+package sessioncleaner
 
 import (
 	"errors"
 	"log"
+	"sync"
+	"time"
 )
+
+const EXPIRATION_SECONDS = 5
 
 // SessionManager keeps track of all sessions from creation, updating
 // to destroying.
 type SessionManager struct {
 	sessions map[string]Session
+	locker   sync.Mutex
 }
 
 // Session stores the session's data
 type Session struct {
-	Data map[string]interface{}
+	Data      map[string]interface{}
+	ExpiresAt time.Time
 }
 
 // NewSessionManager creates a new sessionManager
@@ -39,6 +45,7 @@ func NewSessionManager() *SessionManager {
 		sessions: make(map[string]Session),
 	}
 
+	go m.ExpireSessions()
 	return m
 }
 
@@ -49,11 +56,19 @@ func (m *SessionManager) CreateSession() (string, error) {
 		return "", err
 	}
 
+	m.locker.Lock()
+	defer m.locker.Unlock()
+
 	m.sessions[sessionID] = Session{
-		Data: make(map[string]interface{}),
+		Data:      make(map[string]interface{}),
+		ExpiresAt: getExpiration(),
 	}
 
 	return sessionID, nil
+}
+
+func getExpiration() time.Time {
+	return time.Now().Add(time.Second * EXPIRATION_SECONDS)
 }
 
 // ErrSessionNotFound returned when sessionID not listed in
@@ -63,6 +78,8 @@ var ErrSessionNotFound = errors.New("SessionID does not exists")
 // GetSessionData returns data related to session if sessionID is
 // found, errors otherwise
 func (m *SessionManager) GetSessionData(sessionID string) (map[string]interface{}, error) {
+	m.locker.Lock()
+	defer m.locker.Unlock()
 	session, ok := m.sessions[sessionID]
 	if !ok {
 		return nil, ErrSessionNotFound
@@ -77,15 +94,33 @@ func (m *SessionManager) UpdateSessionData(sessionID string, data map[string]int
 		return ErrSessionNotFound
 	}
 
+	m.locker.Lock()
+	defer m.locker.Unlock()
+
 	// Hint: you should renew expiry of the session here
 	m.sessions[sessionID] = Session{
-		Data: data,
+		Data:      data,
+		ExpiresAt: getExpiration(),
 	}
 
 	return nil
 }
 
-func main() {
+func (m *SessionManager) ExpireSessions() {
+	tick := time.Tick(time.Second)
+	for {
+		<-tick
+		m.locker.Lock()
+		for id, session := range m.sessions {
+			if time.Now().After(session.ExpiresAt) {
+				delete(m.sessions, id)
+			}
+		}
+		m.locker.Unlock()
+	}
+}
+
+func Start() {
 	// Create new sessionManager and new session
 	m := NewSessionManager()
 	sID, err := m.CreateSession()

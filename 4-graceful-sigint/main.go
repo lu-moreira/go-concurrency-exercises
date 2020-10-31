@@ -11,12 +11,32 @@
 //   2. If SIGINT is called again, just kill the program (last resort)
 //
 
-package main
+package sigint
 
-func main() {
+import (
+	"os"
+	"os/signal"
+)
+
+func Start() {
+	s := make(chan os.Signal)
+	signal.Notify(s, os.Interrupt)
+	shutdown := make(chan bool)
+
 	// Create a process
 	proc := MockProcess{}
 
-	// Run the process (blocking)
-	proc.Run()
+	go func() {
+		<-s
+		go proc.Stop()
+		<-s
+		shutdown <- true
+	}()
+
+	go func() {
+		// Run the process (blocking)
+		proc.Run()
+		shutdown <- true
+	}()
+	<-shutdown
 }
